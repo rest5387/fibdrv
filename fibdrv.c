@@ -45,7 +45,7 @@ static long long fib_fast_doubling(long long k)
 {
     long long a = 0, b = 1;
     // long long temp1, temp2;
-    for (unsigned int i = 31; i > -1; i--) {
+    for (int i = 31; i >= 0; i--) {
         long long temp1 = a * (2 * b - a);
         long long temp2 = b * b + a * a;
         long long temp3 = 1;
