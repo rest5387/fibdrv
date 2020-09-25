@@ -6,6 +6,8 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/uaccess.h>
+#include "bignum.h"
 
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
@@ -17,12 +19,25 @@ MODULE_VERSION("0.1");
 /* MAX_LENGTH is set to 92 because
  * ssize_t can't fit the number > 92
  */
-#define MAX_LENGTH 92
+#define MAX_LENGTH 100
 
 static dev_t fib_dev = 0;
 static struct cdev *fib_cdev;
 static struct class *fib_class;
 static DEFINE_MUTEX(fib_mutex);
+
+static inline void add_bigN(bigN *sum, const bigN x, const bigN y)
+{
+    // printk(KERN_EMERG "tmp1.upper = %llu, tmp1.lower = %llu.\n", x.upper,
+    // x.lower); printk(KERN_EMERG "tmp2.upper = %llu, tmp2.lower = %llu.\n",
+    // y.upper, y.lower);
+    sum->upper = x.upper + y.upper;
+    if (y.lower > ~x.lower)
+        sum->upper++;
+    sum->lower = x.lower + y.lower;
+    // printk(KERN_EMERG "sum.upper = %lld, sum.lower = %lld.\n", sum->upper,
+    // sum->lower);
+}
 
 
 // static long long fib_sequence(long long k)
@@ -40,7 +55,7 @@ static DEFINE_MUTEX(fib_mutex);
     return f[k];
 }
 */
-
+/*
 static long long fib_fast_doubling(long long k)
 {
     long long a = 0, b = 1;
@@ -59,7 +74,43 @@ static long long fib_fast_doubling(long long k)
     }
     return a;
 }
+*/
+static bigN fib_sequence(long long k)
+{
+    /*bigN f[k+2];
 
+    f[0].lower = 0;
+    f[0].upper = 0;
+    f[1].lower = 1;
+    f[1].upper = 0;
+
+    for (int i = 2; i <= k; i++){
+        add_bigN(&f[i], f[i-1], f[i-2]);
+    }
+
+    return f[k];*/
+
+    bigN tmp1, tmp2, tmp3;
+    tmp1.lower = 0;
+    tmp1.upper = 0;
+    tmp2.lower = 1;
+    tmp2.upper = 0;
+
+    printk(KERN_EMERG "k = %llu.\n", k);
+    if (k == 0)
+        return tmp1;
+    if (k == 1)
+        return tmp2;
+
+    for (int i = 2; i <= k; i++) {
+        add_bigN(&tmp3, tmp1, tmp2);
+        tmp1 = tmp2;
+        tmp2 = tmp3;
+    }
+    return tmp3;
+}
+
+// static bigN fib_sequence_fast_doubling(long long k) {}
 static int fib_open(struct inode *inode, struct file *file)
 {
     if (!mutex_trylock(&fib_mutex)) {
@@ -76,13 +127,47 @@ static int fib_release(struct inode *inode, struct file *file)
 }
 
 /* calculate the fibonacci number at given offset */
+// static ssize_t fib_read(struct file *file,
+//                        char *buf,
+//                        size_t size,
+//                        loff_t *offset)
+//{
+//    // return (ssize_t) fib_sequence(*offset);
+//    return (ssize_t) fib_fast_doubling(*offset);
+//    //return  fib_sequence(*offset);
+//}
+
+/* calculate the fibonacci number at given offset */
 static ssize_t fib_read(struct file *file,
-                        char *buf,
+                        char __user *buf,
                         size_t size,
                         loff_t *offset)
 {
+    bigN fib_seq;
+    // char test_buf[1];
     // return (ssize_t) fib_sequence(*offset);
-    return (ssize_t) fib_fast_doubling(*offset);
+    // return (ssize_t) fib_fast_doubling(*offset);
+    // buf = (char *)fib_sequence(*offset);
+
+    printk(KERN_EMERG "call fib_sequence(offset = %llu) in kernel space\n",
+           *offset);
+    fib_seq = fib_sequence(*offset);
+    // if(access_ok(VERIFY_WRITE, buf, sizeof(fib_seq))){
+    // printk("buf access is ok");
+    // copy_to_user(buf, &test_buf, sizeof(test_buf));
+    //}
+    printk(KERN_EMERG "call copy_to_user in kernel space\n");
+    if (copy_to_user((char __user *) buf, &fib_seq, size)) {
+        printk(KERN_EMERG "copy_to_user fail\n");
+        return -EFAULT;
+    }
+    printk(KERN_INFO "copy_to_user success!\n");
+    printk(KERN_EMERG " fib_seq.upper = %25llu,  lower = %25llu\n",
+           fib_seq.upper, fib_seq.lower);
+    printk(KERN_EMERG "~fib_seq.upper = %25llu, ~lower = %25llu\n",
+           ~fib_seq.upper, ~fib_seq.lower);
+
+    return (ssize_t) sizeof(fib_seq);
 }
 
 /* write operation is skipped */
