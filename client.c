@@ -3,12 +3,22 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 #include "bignum.h"
 
 #define FIB_DEV "/dev/fibonacci"
 
 #define LEN_BN_STR 50
+
+#define KERN_OUTPUT_FILE "kern_cost.txt"
+#define USER_OUTPUT_FILE "user_cost.txt"
+
+static long timespec_diff(struct timespec *start, struct timespec *end)
+{
+    return (end->tv_sec - start->tv_sec) * 1000000000 +
+           (end->tv_nsec - start->tv_nsec);
+}
 
 static void str_reverse(char *str)
 {
@@ -139,6 +149,7 @@ static void toString_bigN(bigN fib_seq, char *out_buf, unsigned int digits)
 int main()
 {
     long long sz;
+    FILE *kptr = NULL, *uptr = NULL;
 
     bigN bn_buf;
     // char buf[1];
@@ -146,7 +157,10 @@ int main()
     char write_buf[] = "testing writing";
     int offset = 100; /* TODO: try test something bigger than the limit */
 
+    kptr = fopen(KERN_OUTPUT_FILE, "w+");
+    uptr = fopen(USER_OUTPUT_FILE, "w+");
     int fd = open(FIB_DEV, O_RDWR);
+
     if (fd < 0) {
         perror("Failed to open character device");
         exit(1);
@@ -158,8 +172,21 @@ int main()
     }
 
     for (int i = 0; i <= offset; i++) {
+        struct timespec ts1, ts2;
+
         lseek(fd, i, SEEK_SET);
+        clock_gettime(CLOCK_REALTIME, &ts1);
         sz = read(fd, &bn_buf, sizeof(bn_buf));
+        clock_gettime(CLOCK_REALTIME, &ts2);
+
+        long clk_diff = timespec_diff(&ts1, &ts2);
+        long long user_time =
+            clk_diff - bn_buf.fib_cost_time_ns - bn_buf.fib_fd_cost_time_ns;
+
+        fprintf(uptr, "%d %ld %lld\n", i, clk_diff, user_time);
+        fprintf(kptr, "%d %lld %lld\n", i, bn_buf.fib_cost_time_ns,
+                bn_buf.fib_fd_cost_time_ns);
+
         toString_bigN(bn_buf, fib_str_buf, sizeof(fib_str_buf));
         printf("Reading from " FIB_DEV
                " at offset %d, returned the sequence "
@@ -177,6 +204,8 @@ int main()
                i, fib_str_buf);
     }
 
+    fclose(kptr);
+    fclose(uptr);
     close(fd);
     return 0;
 }

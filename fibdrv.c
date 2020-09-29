@@ -25,78 +25,66 @@ static dev_t fib_dev = 0;
 static struct cdev *fib_cdev;
 static struct class *fib_class;
 static DEFINE_MUTEX(fib_mutex);
+static ktime_t kt;
 
 static inline void add_bigN(bigN *sum, const bigN x, const bigN y)
 {
-    // printk(KERN_EMERG "tmp1.upper = %llu, tmp1.lower = %llu.\n", x.upper,
-    // x.lower); printk(KERN_EMERG "tmp2.upper = %llu, tmp2.lower = %llu.\n",
-    // y.upper, y.lower);
     sum->upper = x.upper + y.upper;
     if (y.lower > ~x.lower)
         sum->upper++;
     sum->lower = x.lower + y.lower;
-    // printk(KERN_EMERG "sum.upper = %lld, sum.lower = %lld.\n", sum->upper,
-    // sum->lower);
 }
 
-
-// static long long fib_sequence(long long k)
-//{
-/* FIXME: use clz/ctz and fast algorithms to speed up */
-/*    long long f[k + 2];
-
-    f[0] = 0;
-    f[1] = 1;
-
-    for (int i = 2; i <= k; i++) {
-        f[i] = f[i - 1] + f[i - 2];
-    }
-
-    return f[k];
-}
-*/
-/*
-static long long fib_fast_doubling(long long k)
+// sum = x - y.
+static inline void sub_bigN(bigN *sum, const bigN x, const bigN y)
 {
-    long long a = 0, b = 1;
-    // long long temp1, temp2;
-    for (int i = 31; i >= 0; i--) {
-        long long temp1 = a * (2 * b - a);
-        long long temp2 = b * b + a * a;
-        long long temp3 = 1;
-        a = temp1;
-        b = temp2;
-        if ((k & (temp3 << i)) > 0) {  // if current bit = 1
-            temp1 = a + b;
-            a = b;
-            b = temp1;
+    if ((x.upper >= y.upper) && (x.lower >= y.lower)) {
+        sum->upper = x.upper - y.upper;
+        sum->lower = x.lower - y.lower;
+    } else if ((x.upper >= y.upper) && (y.lower > x.lower)) {
+        sum->upper = x.upper - y.upper - 1;
+        sum->lower = x.lower + ~y.lower + 1;
+    } else {
+        /*y is bigger than x, sum can't be stored in bigN
+         * set sum be zero.*/
+        sum->upper = 0;
+        sum->lower = 0;
+    }
+}
+static inline void multiply_bigN(bigN *output,
+                                 bigN multiplier,
+                                 bigN multiplicand)
+{
+    int k = 8 * sizeof(unsigned long long);
+    bigN product = {.upper = 0, .lower = 0};
+
+    for (int i = 0; i < k; i++) {
+        if (multiplier.lower >> i & 1) {
+            bigN temp;
+            temp.upper = multiplicand.upper << i;
+            temp.lower = multiplicand.lower << i;
+            temp.upper += (i == 0) ? 0 : multiplicand.lower >> (k - i);
+            add_bigN(&product, product, temp);
         }
     }
-    return a;
-}
-*/
-static bigN fib_sequence(long long k)
-{
-    /*bigN f[k+2];
 
-    f[0].lower = 0;
-    f[0].upper = 0;
-    f[1].lower = 1;
-    f[1].upper = 0;
-
-    for (int i = 2; i <= k; i++){
-        add_bigN(&f[i], f[i-1], f[i-2]);
+    for (int i = 0; i < k; i++) {
+        if (multiplier.upper >> i & 1)
+            product.upper += multiplicand.lower << i;
     }
 
-    return f[k];*/
+    output->upper = product.upper;
+    output->lower = product.lower;
+}
 
+static bigN fib_sequence(long long k)
+{
     bigN tmp1, tmp2, tmp3;
     tmp1.lower = 0;
     tmp1.upper = 0;
     tmp2.lower = 1;
     tmp2.upper = 0;
 
-    printk(KERN_EMERG "k = %llu.\n", k);
     if (k == 0)
         return tmp1;
     if (k == 1)
@@ -110,7 +98,34 @@ static bigN fib_sequence(long long k)
     return tmp3;
 }
 
-// static bigN fib_sequence_fast_doubling(long long k) {}
+static bigN fib_sequence_fast_doubling(long long k)
+{
+    bigN a = {.upper = 0, .lower = 0};
+    bigN b = {.upper = 0, .lower = 1};
+    bigN temp1 = {.upper = 0, .lower = 0};
+    bigN temp2 = {.upper = 0, .lower = 0};
+    bigN temp3 = {.upper = 0, .lower = 0};
+
+    for (int i = 62; i >= 0; i--) {
+        // temp1 = a*(2b-a)
+        add_bigN(&temp3, b, b);
+        sub_bigN(&temp3, temp3, a);
+        multiply_bigN(&temp1, a, temp3);
+        // temp2 = b*b + a*a;
+        multiply_bigN(&temp2, b, b);
+        multiply_bigN(&temp3, a, a);
+        add_bigN(&temp2, temp2, temp3);
+        a = temp1;
+        b = temp2;
+        if ((k >> i) & 1) {
+            add_bigN(&temp1, a, b);
+            a = b;
+            b = temp1;
+        }
+    }
+
+    return a;
+}
 static int fib_open(struct inode *inode, struct file *file)
 {
     if (!mutex_trylock(&fib_mutex)) {
@@ -144,28 +159,20 @@ static ssize_t fib_read(struct file *file,
                         loff_t *offset)
 {
     bigN fib_seq;
-    // char test_buf[1];
-    // return (ssize_t) fib_sequence(*offset);
-    // return (ssize_t) fib_fast_doubling(*offset);
-    // buf = (char *)fib_sequence(*offset);
 
-    printk(KERN_EMERG "call fib_sequence(offset = %llu) in kernel space\n",
-           *offset);
-    fib_seq = fib_sequence(*offset);
-    // if(access_ok(VERIFY_WRITE, buf, sizeof(fib_seq))){
-    // printk("buf access is ok");
-    // copy_to_user(buf, &test_buf, sizeof(test_buf));
-    //}
-    printk(KERN_EMERG "call copy_to_user in kernel space\n");
-    if (copy_to_user((char __user *) buf, &fib_seq, size)) {
-        printk(KERN_EMERG "copy_to_user fail\n");
+    kt = ktime_get();
+    fib_sequence(*offset);
+    kt = ktime_sub(ktime_get(), kt);
+    long long tmp_kt_ns = ktime_to_ns(kt);
+
+    kt = ktime_get();
+    fib_seq = fib_sequence_fast_doubling(*offset);
+    kt = ktime_sub(ktime_get(), kt);
+    fib_seq.fib_fd_cost_time_ns = ktime_to_ns(kt);
+    fib_seq.fib_cost_time_ns = tmp_kt_ns;
+
+    if (copy_to_user((char __user *) buf, &fib_seq, size))
         return -EFAULT;
-    }
-    printk(KERN_INFO "copy_to_user success!\n");
-    printk(KERN_EMERG " fib_seq.upper = %25llu,  lower = %25llu\n",
-           fib_seq.upper, fib_seq.lower);
-    printk(KERN_EMERG "~fib_seq.upper = %25llu, ~lower = %25llu\n",
-           ~fib_seq.upper, ~fib_seq.lower);
 
     return (ssize_t) sizeof(fib_seq);
 }
